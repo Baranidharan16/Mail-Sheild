@@ -25,13 +25,21 @@ if db_url.startswith("sqlite:///./") or db_url == "sqlite:///forensics.db":
 _connect_args = {}
 if db_url.startswith("sqlite"):
     _connect_args = {"check_same_thread": False}
+else:
+    # PostgreSQL / Neon / Cloud DB connection options
+    _connect_args = {
+        "connect_timeout": 15,
+    }
+    # Enforce sslmode=require for remote hosts if not explicitly specified in URL
+    if "sslmode" not in db_url and "localhost" not in db_url and "127.0.0.1" not in db_url:
+        _connect_args["sslmode"] = "require"
 
 engine = create_engine(
     db_url,
     connect_args=_connect_args,
     future=True,
     pool_pre_ping=not db_url.startswith("sqlite"),  # drop dead Postgres connections transparently
-    **({} if db_url.startswith("sqlite") else {"pool_recycle": 280, "pool_size": 5, "max_overflow": 5}),
+    **({} if db_url.startswith("sqlite") else {"pool_recycle": 300, "pool_size": 5, "max_overflow": 5}),
 )
 
 if db_url.startswith("sqlite"):
@@ -99,30 +107,51 @@ def init_db() -> None:
     from app.models import processed_email  # noqa: F401  ← real-time monitor dedup/state
     from app.models import advanced  # noqa: F401  ← sandbox / GRC / VAPT / SOC alarm tables
 
-    inspector = sqlalchemy.inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-    tables_to_create = [table for table in Base.metadata.sorted_tables if table.name not in existing_tables]
+    db_log = _logging.getLogger("mailshield.db")
+    try:
+        inspector = sqlalchemy.inspect(engine)
+        existing_tables = set(inspector.get_table_names())
+        tables_to_create = [table for table in Base.metadata.sorted_tables if table.name not in existing_tables]
 
-    if tables_to_create:
-        Base.metadata.create_all(bind=engine, tables=tables_to_create)
-
-    # Migrate existing investigations table if user_id column is missing
-    if "investigations" in existing_tables:
-        columns = {col["name"] for col in inspector.get_columns("investigations")}
-        if "user_id" not in columns:
-            with engine.begin() as conn:
-                conn.execute(sqlalchemy.text("ALTER TABLE investigations ADD COLUMN user_id VARCHAR(36)"))
-
-    # Normalise stored e-mails so the unique index is effectively case-insensitive.
-    if "users" in existing_tables:
-        try:
-            with engine.begin() as conn:
-                conn.execute(sqlalchemy.text(
-                    "UPDATE users SET email = LOWER(TRIM(email)) WHERE email <> LOWER(TRIM(email))"
-                ))
-        except Exception:  # duplicate after normalisation — leave data untouched
-            import logging
-            logging.getLogger("mailshield.db").warning(
-                "Could not normalise user e-mails (case-duplicates exist); please resolve manually."
+        if tables_to_create:
+            Base.metadata.create_all(bind=engine, tables=tables_to_create)
+            db_log.info(
+                "Created %d missing tables on %s: %s",
+                len(tables_to_create),
+                engine.url.render_as_string(hide_password=True),
+                ", ".join(t.name for t in tables_to_create),
             )
+        else:
+            db_log.info(
+                "All %d tables verified on %s.",
+                len(Base.metadata.tables),
+                engine.url.render_as_string(hide_password=True),
+            )
+
+        # Migrate existing investigations table if user_id column is missing
+        if "investigations" in existing_tables:
+            columns = {col["name"] for col in inspector.get_columns("investigations")}
+            if "user_id" not in columns:
+                with engine.begin() as conn:
+                    conn.execute(sqlalchemy.text("ALTER TABLE investigations ADD COLUMN user_id VARCHAR(36)"))
+                db_log.info("Added user_id column to investigations table.")
+
+        # Normalise stored e-mails so the unique index is effectively case-insensitive.
+        if "users" in existing_tables:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(sqlalchemy.text(
+                        "UPDATE users SET email = LOWER(TRIM(email)) WHERE email <> LOWER(TRIM(email))"
+                    ))
+            except Exception:  # duplicate after normalisation — leave data untouched
+                db_log.warning(
+                    "Could not normalise user e-mails (case-duplicates exist); please resolve manually."
+                )
+    except Exception as exc:
+        db_log.error(
+            "Database initialization error on %s: %s",
+            engine.url.render_as_string(hide_password=True),
+            exc,
+        )
+        raise
 

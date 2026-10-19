@@ -284,13 +284,14 @@ Frontend and API share one origin, so login cookies are first-party and there is
 
 | Key | Value |
 |---|---|
+| `DATABASE_URL` | External PostgreSQL connection string, e.g. Neon: `postgresql://user:password@ep-xyz.aws.neon.tech/neondb?sslmode=require` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | from the same Google OAuth client |
 | `GOOGLE_REDIRECT_URI` | `https://mailshield-sih.onrender.com/auth/google/callback` |
 | `GEMINI_API_KEY` | AI explanations (optional) |
 | `SARVAM_API_KEY` | voice assistant (optional) |
 | `FERNET_KEY` | optional; OAuth tokens are always encrypted (derived key if unset) |
 
-Everything else (`APP_ENV`, `DATABASE_URL`, `JWT_SECRET_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`, monitor/retention settings) is set by `render.yaml`.
+Everything else (`APP_ENV`, `JWT_SECRET_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`, monitor/retention settings) is set by `render.yaml`.
 
 ### Google OAuth (Google Auth Platform)
 * **Clients →** Authorized JavaScript origins: `https://mailshield-sih.onrender.com`, `http://localhost:5173`, `http://localhost:8000`; Authorized redirect URIs: `https://mailshield-sih.onrender.com/auth/google/callback`, `http://localhost:8000/auth/google/callback`.
